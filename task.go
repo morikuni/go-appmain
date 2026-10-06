@@ -9,23 +9,29 @@ import (
 // Task represents a task in the App.
 type Task func(ctx context.Context) error
 
-// TaskType represents a type of the tasks.
+// TaskType represents the type of a task.
 type TaskType int
 
 const (
-	// TaskTypeInit indicates the task is init task.
+	// TaskTypeInit indicates an init task.
 	TaskTypeInit TaskType = iota + 1
-	// TaskTypeMain indicates the task is main task.
+	// TaskTypeMain indicates a main task.
 	TaskTypeMain
-	// TaskTypeCleanup indicates the task is cleanup task.
+	// TaskTypeCleanup indicates a cleanup task.
 	TaskTypeCleanup
 )
 
-// TaskContext is the context of the Task.
+// TaskContext provides information about a task.
 type TaskContext interface {
+	// Name returns the name passed to the Add*Task method.
 	Name() string
+	// Type returns the type of the task.
 	Type() TaskType
+	// Done returns a channel that is closed when the task completes or is skipped.
 	Done() <-chan struct{}
+	// Err returns the error returned by the task. It is valid only after Done is closed.
+	// If the task panics, the error describes the panic.
+	// If the task is skipped, it returns ErrSkipped.
 	Err() error
 }
 
@@ -44,16 +50,16 @@ func newTask(name string, tt TaskType, t Task, opts []TaskOption) *task {
 	case TaskTypeInit:
 		for _, at := range config.after {
 			if at.Type() != TaskTypeInit {
-				panic(name + ": init task can run after only init task: " + at.Name())
+				panic(name + ": init task can only run after init tasks: " + at.Name())
 			}
 		}
 	case TaskTypeMain:
 		for _, at := range config.after {
 			switch at.Type() {
 			case TaskTypeInit:
-				panic(name + ": main task always run after init task: " + at.Name())
+				panic(name + ": main task always runs after init tasks: " + at.Name())
 			case TaskTypeCleanup:
-				panic(name + ": main task should start before cleanup task: " + at.Name())
+				panic(name + ": main task cannot run after cleanup task: " + at.Name())
 			}
 		}
 	}
@@ -108,4 +114,6 @@ func (t *task) run(ctx context.Context) {
 	}
 }
 
+// ErrSkipped is returned by TaskContext.Err when the main task did not run
+// because init tasks failed or a signal was received during init tasks.
 var ErrSkipped = errors.New("skipped")
