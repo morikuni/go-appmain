@@ -20,9 +20,6 @@ type App struct {
 //   - ErrorStrategy
 //   - DefaultTaskOptions
 //   - NotifySignal
-//
-// The App starts handling signals when it is created, and stops handling them
-// when Run returns.
 func New(opts ...Option) *App {
 	c := newConfig(opts)
 
@@ -31,17 +28,10 @@ func New(opts ...Option) *App {
 		sigSet[s] = struct{}{}
 	}
 
-	sigChan := make(chan os.Signal, 1)
-	// signal.Notify with no signals relays every signal, including SIGURG used by
-	// the Go runtime for preemption, so it must not be called with an empty list.
-	if len(c.signals) > 0 {
-		signal.Notify(sigChan, c.signals...)
-	}
-
 	return &App{
 		tasks:   make(map[TaskType][]*task),
 		config:  c,
-		sigChan: sigChan,
+		sigChan: make(chan os.Signal, 1),
 		sigSet:  sigSet,
 	}
 }
@@ -104,9 +94,15 @@ func (app *App) SendSignal(sig os.Signal) {
 //
 //	os.Exit(app.Run())
 //
+// The App handles signals only while Run is running.
 // Run must be called only once.
 func (app *App) Run() int {
-	defer signal.Stop(app.sigChan)
+	// signal.Notify with no signals relays every signal, including SIGURG used by
+	// the Go runtime for preemption, so it must not be called with an empty list.
+	if len(app.config.signals) > 0 {
+		signal.Notify(app.sigChan, app.config.signals...)
+		defer signal.Stop(app.sigChan)
+	}
 
 	ctx := context.Background()
 	code, interrupted := app.runInitAndMain(ctx)
