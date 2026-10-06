@@ -12,8 +12,9 @@ func TestRunAfter(t *testing.T) {
 	var count int32
 	createTask := func(want int32) func(ctx context.Context) error {
 		return func(ctx context.Context) error {
-			if atomic.AddInt32(&count, 1) != want {
-				t.Fatalf("want %d got %d", want, count)
+			// Tasks run in their own goroutines, where t.Fatalf must not be called.
+			if got := atomic.AddInt32(&count, 1); got != want {
+				t.Errorf("want %d got %d", want, got)
 			}
 			return nil
 		}
@@ -51,7 +52,7 @@ func TestIntercept(t *testing.T) {
 		return func(ctx context.Context, taskContext TaskContext, task Task) error {
 			count++
 			if count != want {
-				t.Fatalf("want %d got %d", want, count)
+				t.Errorf("want %d got %d", want, count)
 			}
 			return task(ctx)
 		}
