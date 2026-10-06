@@ -4,9 +4,8 @@ import (
 	"context"
 )
 
-// TaskOption represents an interface of the option for the Add***Task
-// functions of App.
-// Available TaskOption are below.
+// TaskOption is an option for the Add*Task methods of App.
+// The available options are:
 //   - RunAfter
 //   - Interceptor
 //   - ChainInterceptors
@@ -33,15 +32,16 @@ func newTaskConfig(opts []TaskOption) *taskConfig {
 	return c
 }
 
-// RunAfter specifies dependent tasks that must be complete before executing the Task.
-// The task will be executed even if dependent tasks exit with an error.
+// RunAfter specifies the tasks that must complete before the task starts.
+// The task runs even if those tasks return an error.
 func RunAfter(tcs ...TaskContext) TaskOption {
 	return taskOptionFunc(func(c *taskConfig) {
 		c.after = append(c.after, tcs...)
 	})
 }
 
-// Interceptor intercepts task to be executed.
+// Interceptor wraps the execution of a task.
+// The given Task runs the actual task, so the interceptor decides when (or whether) to call it.
 type Interceptor func(context.Context, TaskContext, Task) error
 
 func (i Interceptor) applyTask(c *taskConfig) {
@@ -52,12 +52,12 @@ func (i Interceptor) applyTask(c *taskConfig) {
 	}
 }
 
-// ChainInterceptors merges given slice of Interceptor into one Interceptor.
-// The first Interceptor will be executed at the first and the last one is the last.
+// ChainInterceptors combines the given interceptors into one Interceptor.
+// They are executed in the given order: the first one is the outermost.
 func ChainInterceptors(is ...Interceptor) Interceptor {
 	switch len(is) {
 	case 0:
-		panic("no interceptor")
+		panic("ChainInterceptors requires at least one interceptor")
 	case 1:
 		return is[0]
 	default:
