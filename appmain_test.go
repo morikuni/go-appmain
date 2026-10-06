@@ -256,3 +256,22 @@ func TestApp_InitError(t *testing.T) {
 	equal(t, mainCount, int32(0))
 	equal(t, mainErr, ErrSkipped)
 }
+
+func TestApp_SendSignalAfterRun(t *testing.T) {
+	app := New()
+	app.Run()
+
+	done := make(chan struct{})
+	go func() {
+		// Send more signals than the buffer of the signal channel.
+		app.SendSignal(os.Interrupt)
+		app.SendSignal(os.Interrupt)
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("SendSignal blocked after Run returned")
+	}
+}

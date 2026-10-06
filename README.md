@@ -129,6 +129,15 @@ app := appmain.New(appmain.ErrorStrategy(func(tc appmain.TaskContext) appmain.De
 
 `ErrorStrategy` may be called concurrently, since cleanup tasks start while the canceled tasks are still stopping.
 
+If a task panics, `TaskContext.Err()` returns `*appmain.PanicError`, which holds the value passed to `panic` and the stack trace:
+
+```go
+var pe *appmain.PanicError
+if errors.As(tc.Err(), &pe) {
+	log.Printf("%s panicked: %v\n%s", tc.Name(), pe.Value, pe.Stack)
+}
+```
+
 ```go
 app := appmain.New(appmain.ErrorStrategy(func(tc appmain.TaskContext) appmain.Decision {
 	log.Printf("%s failed: %v", tc.Name(), tc.Err())

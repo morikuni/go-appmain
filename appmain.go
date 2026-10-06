@@ -13,6 +13,7 @@ type App struct {
 	config  *config
 	sigChan chan os.Signal
 	sigSet  map[os.Signal]struct{}
+	done    chan struct{}
 }
 
 // New creates a new App with the given options.
@@ -33,6 +34,7 @@ func New(opts ...Option) *App {
 		config:  c,
 		sigChan: make(chan os.Signal, 1),
 		sigSet:  sigSet,
+		done:    make(chan struct{}),
 	}
 }
 
@@ -82,10 +84,15 @@ func (app *App) addTask(name string, tt TaskType, t Task, opts []TaskOption) Tas
 // Since the App handles signals by default, typical apps do not need this method.
 // It is useful for testing.
 //
-// Signals not specified by NotifySignal are ignored.
+// Signals not specified by NotifySignal are ignored, and so are signals sent
+// after Run returns.
 func (app *App) SendSignal(sig os.Signal) {
-	if _, ok := app.sigSet[sig]; ok {
-		app.sigChan <- sig
+	if _, ok := app.sigSet[sig]; !ok {
+		return
+	}
+	select {
+	case app.sigChan <- sig:
+	case <-app.done:
 	}
 }
 
@@ -97,6 +104,8 @@ func (app *App) SendSignal(sig os.Signal) {
 // The App handles signals only while Run is running.
 // Run must be called only once.
 func (app *App) Run() int {
+	defer close(app.done)
+
 	// signal.Notify with no signals relays every signal, including SIGURG used by
 	// the Go runtime for preemption, so it must not be called with an empty list.
 	if len(app.config.signals) > 0 {
