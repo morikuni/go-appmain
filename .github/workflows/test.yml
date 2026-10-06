@@ -8,19 +8,17 @@ on:
       - opened
       - synchronize
       - reopened
-jobs: 
+jobs:
   test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@master
-      - uses: actions/setup-go@v2
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
         with:
-          go-version: "1"
-      - run: sudo apt-get update && sudo apt-get install make
+          go-version: stable
       - run: make coverage
-      - uses: codecov/codecov-action@v1
+      - uses: codecov/codecov-action@v4
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
-          file: ./coverage.out
-          yml: ./.codecov.yml
+          files: ./coverage.out
           fail_ci_if_error: true
