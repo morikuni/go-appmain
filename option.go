@@ -68,6 +68,9 @@ func (d Decision) statusCode() int {
 // ErrorStrategy is an option for the New function that decides how the App
 // behaves when a task returns an error. It is called only when a task
 // returns an error, which is available from TaskContext.Err().
+//
+// It may be called concurrently, because cleanup tasks start while the tasks
+// canceled by a signal are still stopping.
 type ErrorStrategy func(TaskContext) Decision
 
 func (s ErrorStrategy) apply(c *config) {
@@ -100,6 +103,6 @@ func DefaultTaskOptions(opts ...TaskOption) Option {
 // Calling NotifySignal with no arguments disables signal handling.
 func NotifySignal(sigs ...os.Signal) Option {
 	return optionFunc(func(c *config) {
-		c.signals = sigs
+		c.signals = append([]os.Signal(nil), sigs...)
 	})
 }
