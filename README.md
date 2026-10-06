@@ -81,11 +81,11 @@ func main() {
 ## Lifecycle
 
 ```
-          ┌──────────── signal ────────────┐
-          │                                ▼
- init tasks ──(all succeeded)──▶ main tasks ──(all done)──▶ cleanup tasks ──▶ exit
-          │                                                      ▲
-          └──────── error (main tasks are skipped) ──────────────┘
+init tasks ──(all succeeded)──▶ main tasks ──(all done)──▶ cleanup tasks ──▶ exit
+    │                               │                            ▲
+    │                               └──── error or signal ───────┤
+    │                                                            │
+    └──── error or signal (main tasks are skipped) ──────────────┘
 ```
 
 | Phase   | Added by         | Description |
@@ -100,6 +100,7 @@ func main() {
 - **1st signal** during cleanup tasks: the `context.Context` of the cleanup tasks is canceled.
 - **2nd signal**: `Run` returns immediately without waiting for the remaining tasks, with exit code `128 + signal number`.
 
+Signals are handled only while `Run` is running.
 The handled signals can be changed with `appmain.NotifySignal(sigs...)`. `appmain.NotifySignal()` with no arguments disables signal handling.
 
 ### Error strategy
@@ -113,6 +114,20 @@ When a task returns an error (or panics), the `ErrorStrategy` decides what to do
 | `Exit`     | Cancel the tasks in the same phase and exit with code `1`. |
 
 `DefaultErrorStrategy` returns `Exit` for init and main tasks, and `Continue` for cleanup tasks.
+
+Note that `context.Canceled` is also treated as an error. With `DefaultErrorStrategy`, a main task that
+returns `ctx.Err()` after a signal makes the exit code `1`. Return `nil` instead, or ignore it in your strategy:
+
+```go
+app := appmain.New(appmain.ErrorStrategy(func(tc appmain.TaskContext) appmain.Decision {
+	if errors.Is(tc.Err(), context.Canceled) {
+		return appmain.Continue
+	}
+	return appmain.DefaultErrorStrategy(tc)
+}))
+```
+
+`ErrorStrategy` may be called concurrently, since cleanup tasks start while the canceled tasks are still stopping.
 
 ```go
 app := appmain.New(appmain.ErrorStrategy(func(tc appmain.TaskContext) appmain.Decision {
