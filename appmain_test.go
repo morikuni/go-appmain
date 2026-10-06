@@ -222,7 +222,7 @@ func runApp(runner func(*App) int) (int, ResultSet, time.Duration) {
 
 	start := time.Now()
 	code := runner(app)
-	d := time.Now().Sub(start)
+	d := time.Since(start)
 	return code, ResultSet{
 		NumInit:        atomic.LoadInt32(&nInit),
 		SuccessInit:    atomic.LoadInt32(&sInit),
@@ -231,4 +231,28 @@ func runApp(runner func(*App) int) (int, ResultSet, time.Duration) {
 		NumCleanup:     atomic.LoadInt32(&nCleanup),
 		SuccessCleanup: atomic.LoadInt32(&sCleanup),
 	}, d
+}
+
+func TestApp_InitError(t *testing.T) {
+	app := New()
+
+	app.AddInitTask("", func(ctx context.Context) error {
+		return errors.New("error")
+	})
+	var mainCount int32
+	main := app.AddMainTask("", func(ctx context.Context) error {
+		atomic.AddInt32(&mainCount, 1)
+		return nil
+	})
+	var mainErr error
+	app.AddCleanupTask("", func(ctx context.Context) error {
+		mainErr = main.Err()
+		return nil
+	}, RunAfter(main))
+
+	code := app.Run()
+
+	equal(t, code, 1)
+	equal(t, mainCount, int32(0))
+	equal(t, mainErr, ErrSkipped)
 }

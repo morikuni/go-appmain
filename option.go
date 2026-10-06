@@ -2,12 +2,11 @@ package appmain
 
 import (
 	"os"
-	"os/signal"
 	"syscall"
 )
 
-// Option represents an interface of the option for the New function.
-// Available options are below.
+// Option is an option for the New function.
+// The available options are:
 //   - ErrorStrategy
 //   - DefaultTaskOptions
 //   - NotifySignal
@@ -22,14 +21,14 @@ func (f optionFunc) apply(c *config) {
 }
 
 type config struct {
-	sigChan            chan os.Signal
-	sigSet             map[os.Signal]struct{}
+	signals            []os.Signal
 	errorStrategy      ErrorStrategy
 	defaultTaskOptions []TaskOption
 }
 
 func newConfig(opts []Option) *config {
 	c := &config{
+		signals:       []os.Signal{os.Interrupt, syscall.SIGTERM},
 		errorStrategy: DefaultErrorStrategy,
 	}
 
@@ -37,28 +36,19 @@ func newConfig(opts []Option) *config {
 		o.apply(c)
 	}
 
-	if c.sigChan == nil {
-		c.sigChan = make(chan os.Signal, 1)
-		signal.Notify(c.sigChan, os.Interrupt, syscall.SIGTERM)
-		c.sigSet = map[os.Signal]struct{}{
-			os.Interrupt:    {},
-			syscall.SIGTERM: {},
-		}
-	}
-
 	return c
 }
 
-// Decision is the result of ErrorStrategy used to decide if
-// canceling current tasks.
+// Decision is the result of ErrorStrategy that decides whether to
+// cancel the running tasks.
 type Decision int
 
 const (
-	// Continue indicates that keep running current tasks.
+	// Continue keeps the running tasks running.
 	Continue Decision = iota
-	// Shutdown indicates that cancel current tasks and exit with status success.
+	// Shutdown cancels the running tasks and exits with a success status.
 	Shutdown
-	// Exit indicates that cancel current tasks and exit with status error.
+	// Exit cancels the running tasks and exits with an error status.
 	Exit
 )
 
@@ -75,10 +65,9 @@ func (d Decision) statusCode() int {
 	}
 }
 
-// ErrorStrategy is the option for the New function to decide how the App
-// performs when any tasks return an error. It is called only if
-// any tasks return an error. The error from the task is available
-// from TaskContext.Err().
+// ErrorStrategy is an option for the New function that decides how the App
+// behaves when a task returns an error. It is called only when a task
+// returns an error, which is available from TaskContext.Err().
 type ErrorStrategy func(TaskContext) Decision
 
 func (s ErrorStrategy) apply(c *config) {
@@ -93,29 +82,24 @@ func DefaultErrorStrategy(tc TaskContext) Decision {
 	case TaskTypeInit, TaskTypeMain:
 		return Exit
 	default:
-		panic("never happen")
+		panic("unknown task type")
 	}
 }
 
-// DefaultTaskOptions is the option for the New function to set the
-// default option for every tasks in the App.
+// DefaultTaskOptions is an option for the New function that applies the
+// given task options to every task in the App.
 func DefaultTaskOptions(opts ...TaskOption) Option {
 	return optionFunc(func(c *config) {
 		c.defaultTaskOptions = append(c.defaultTaskOptions, opts...)
 	})
 }
 
-// NotifySignal is the option for New function to overwrite the
-// signals that the App handles to start cleanup tasks.
-// By default, the App handles syscall.SIGINT and syscall.SIGTERM.
+// NotifySignal is an option for the New function that overrides the
+// signals the App handles to start cleanup tasks.
+// By default, the App handles os.Interrupt (SIGINT) and syscall.SIGTERM.
+// Calling NotifySignal with no arguments disables signal handling.
 func NotifySignal(sigs ...os.Signal) Option {
 	return optionFunc(func(c *config) {
-		c.sigChan = make(chan os.Signal, 1)
-		signal.Notify(c.sigChan, sigs...)
-		set := make(map[os.Signal]struct{}, len(sigs))
-		for _, s := range sigs {
-			set[s] = struct{}{}
-		}
-		c.sigSet = set
+		c.signals = sigs
 	})
 }

@@ -175,3 +175,35 @@ func TestNotifySignal(t *testing.T) {
 		equal(t, count, 1)
 	})
 }
+
+func TestNotifySignal_Disabled(t *testing.T) {
+	app := New(NotifySignal())
+
+	var count int32
+	app.AddMainTask("", func(ctx context.Context) error {
+		// CPU-bound goroutines make the runtime send SIGURG for preemption,
+		// which must not be treated as a shutdown signal.
+		deadline := time.Now().Add(200 * time.Millisecond)
+		done := make(chan struct{})
+		for i := 0; i < 4; i++ {
+			go func() {
+				for time.Now().Before(deadline) {
+				}
+				done <- struct{}{}
+			}()
+		}
+		for i := 0; i < 4; i++ {
+			<-done
+		}
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		atomic.AddInt32(&count, 1)
+		return nil
+	})
+
+	code := app.Run()
+
+	equal(t, code, 0)
+	equal(t, count, int32(1))
+}

@@ -3,58 +3,81 @@ package appmain
 import (
 	"context"
 	"os"
+	"os/signal"
 	"syscall"
 )
 
 // App represents an application.
 type App struct {
-	tasks  map[TaskType][]*task
-	config *config
+	tasks   map[TaskType][]*task
+	config  *config
+	sigChan chan os.Signal
+	sigSet  map[os.Signal]struct{}
 }
 
-// New creates a new App instance from options.
-// Available options are below.
+// New creates a new App with the given options.
+// The available options are:
 //   - ErrorStrategy
 //   - DefaultTaskOptions
 //   - NotifySignal
+//
+// The App starts handling signals when it is created, and stops handling them
+// when Run returns.
 func New(opts ...Option) *App {
+	c := newConfig(opts)
+
+	sigSet := make(map[os.Signal]struct{}, len(c.signals))
+	for _, s := range c.signals {
+		sigSet[s] = struct{}{}
+	}
+
+	sigChan := make(chan os.Signal, 1)
+	// signal.Notify with no signals relays every signal, including SIGURG used by
+	// the Go runtime for preemption, so it must not be called with an empty list.
+	if len(c.signals) > 0 {
+		signal.Notify(sigChan, c.signals...)
+	}
+
 	return &App{
-		tasks:  make(map[TaskType][]*task),
-		config: newConfig(opts),
+		tasks:   make(map[TaskType][]*task),
+		config:  c,
+		sigChan: sigChan,
+		sigSet:  sigSet,
 	}
 }
 
-// AddInitTask add a task with name as initialization task of the App.
+// AddInitTask adds a named initialization task to the App.
 //
-// The init tasks are executed before starting main tasks. Therefore,
-// the main tasks won't start until all init tasks complete.
+// Init tasks run before main tasks; main tasks do not start until all init
+// tasks have completed.
 //
-// By default, if any init task return an error, the App will cancels all
-// context.Context in all init tasks and start cleanup tasks before executing
-// main tasks. To overwrite default strategy, use ErrorStrategy option to the New function.
+// By default, if any init task returns an error, the App cancels the
+// context.Context of all init tasks, skips the main tasks and starts the
+// cleanup tasks. To change this behavior, pass the ErrorStrategy option to New.
 func (app *App) AddInitTask(name string, t Task, opts ...TaskOption) TaskContext {
 	return app.addTask(name, TaskTypeInit, t, opts)
 }
 
-// AddMainTask add a task with name as main task of the App.
+// AddMainTask adds a named main task to the App.
 //
-// The main tasks will start after all init tasks completed.
+// Main tasks start after all init tasks have completed.
 //
-// By default, if any main task return an error, the App will cancels all
-// context.Context in all  main tasks and start cleanup tasks.
-// To overwrite default strategy, use ErrorStrategy option to the New function.
+// By default, if any main task returns an error, the App cancels the
+// context.Context of all main tasks and starts the cleanup tasks.
+// To change this behavior, pass the ErrorStrategy option to New.
 func (app *App) AddMainTask(name string, t Task, opts ...TaskOption) TaskContext {
 	return app.addTask(name, TaskTypeMain, t, opts)
 }
 
-// AddCleanupTask add a task with name as cleanup task of the App.
+// AddCleanupTask adds a named cleanup task to the App.
 //
-// The cleanup tasks are executed when all main tasks completed or the first signal
-// is received. If signal is received twice, the context.Context in cleanup tasks is
-// canceled and the App exit without waiting completion of cleanup tasks.
+// Cleanup tasks start when all main tasks have completed, when init or main
+// tasks fail, or when the first signal is received. If a signal is received
+// while cleanup tasks are running, their context.Context is canceled. On the
+// second signal, the App exits without waiting for the cleanup tasks to complete.
 //
-// Unlike init and main tasks, context.Context in the cleanup tasks is not canceled
-// even if some tasks return error.
+// Unlike init and main tasks, by default the context.Context of cleanup tasks
+// is not canceled even if some of them return an error.
 func (app *App) AddCleanupTask(name string, t Task, opts ...TaskOption) TaskContext {
 	return app.addTask(name, TaskTypeCleanup, t, opts)
 }
@@ -65,114 +88,106 @@ func (app *App) addTask(name string, tt TaskType, t Task, opts []TaskOption) Tas
 	return r
 }
 
-// SendSignal performs like sending a signal to the App.
-// Since the App handles signal by default, this method is not necessary for usual apps.
-// It is useful for testing the App.
+// SendSignal emulates sending a signal to the App.
+// Since the App handles signals by default, typical apps do not need this method.
+// It is useful for testing.
+//
+// Signals not specified by NotifySignal are ignored.
 func (app *App) SendSignal(sig os.Signal) {
-	if _, ok := app.config.sigSet[sig]; ok {
-		app.config.sigChan <- sig
+	if _, ok := app.sigSet[sig]; ok {
+		app.sigChan <- sig
 	}
 }
 
-// Run runs the App and returns status code for the main function.
-// It can be used like following.
+// Run runs the App and returns an exit code for the main function.
+// It is typically used as follows:
 //
-//   os.Exit(app.Run())
-func (app *App) Run() (code int) {
-	var (
-		resultChan  <-chan Decision
-		signalCount int
-	)
-	defer func() {
-		ctx := context.Background()
-		cleanupCtx, cancelCleanup := context.WithCancel(ctx)
-		defer cancelCleanup()
-		cleanupResult := app.cleanup(cleanupCtx)
+//	os.Exit(app.Run())
+//
+// Run must be called only once.
+func (app *App) Run() int {
+	defer signal.Stop(app.sigChan)
 
-		if resultChan != nil {
-			select {
-			case d := <-resultChan:
-				if code == 0 {
-					code = d.statusCode()
-				}
-			case sig := <-app.config.sigChan:
-				if code == 0 {
-					code = signalCode(sig)
-				}
+	ctx := context.Background()
+	code, interrupted := app.runInitAndMain(ctx)
+	return app.runCleanup(ctx, code, interrupted)
+}
 
-				// When this if block is executing, since resultChan it not nil,
-				// there was a cancel of either of main or init execution by signal.
-				// Therefore signalCount must be 1 and this is 2nd time of signal,
-				// so exit immediately without waiting cleanup result.
-				return
-			}
-		}
-
-		for {
-			select {
-			case d := <-cleanupResult:
-				if code == 0 {
-					code = d.statusCode()
-				}
-				return
-			case sig := <-app.config.sigChan:
-				signalCount++
-				if signalCount >= 2 {
-					code = signalCode(sig)
-					return
-				}
-				cancelCleanup()
-			}
-		}
-	}()
-
-	background := context.Background()
-	initCtx, cancelInit := context.WithCancel(background)
+// runInitAndMain runs init tasks and then main tasks.
+// If a signal is received, it cancels the running tasks and returns their
+// result channel without waiting, so that cleanup tasks can start immediately.
+func (app *App) runInitAndMain(ctx context.Context) (code int, interrupted <-chan Decision) {
+	initCtx, cancelInit := context.WithCancel(ctx)
 	defer cancelInit()
-	initResult := app.init(initCtx)
-	resultChan = initResult
+	initResult := app.runTasks(initCtx, TaskTypeInit)
 
 	select {
 	case d := <-initResult:
 		if d != Continue {
-			resultChan = nil
 			app.skipMain()
-			return d.statusCode()
+			return d.statusCode(), nil
 		}
-	case <-app.config.sigChan:
-		signalCount++
-		cancelInit()
+	case <-app.sigChan:
 		app.skipMain()
-		return 0
+		return 0, initResult
 	}
 
-	mainCtx, cancelMain := context.WithCancel(background)
+	mainCtx, cancelMain := context.WithCancel(ctx)
 	defer cancelMain()
-	mainResult := app.main(mainCtx)
-	resultChan = mainResult
+	mainResult := app.runTasks(mainCtx, TaskTypeMain)
 
 	select {
 	case d := <-mainResult:
-		resultChan = nil
-		return d.statusCode()
-	case <-app.config.sigChan:
-		signalCount++
-		cancelMain()
-		return 0
+		return d.statusCode(), nil
+	case <-app.sigChan:
+		return 0, mainResult
 	}
 }
+
+// runCleanup runs cleanup tasks.
+// The first signal cancels the cleanup tasks and the second signal makes it
+// return immediately. A signal received during init or main tasks counts as
+// the first one.
+func (app *App) runCleanup(ctx context.Context, code int, interrupted <-chan Decision) int {
+	cleanupCtx, cancelCleanup := context.WithCancel(ctx)
+	defer cancelCleanup()
+	cleanupResult := app.runTasks(cleanupCtx, TaskTypeCleanup)
+
+	signaled := interrupted != nil
+	if signaled {
+		select {
+		case d := <-interrupted:
+			code = d.statusCode()
+		case sig := <-app.sigChan:
+			return signalCode(sig)
+		}
+	}
+
+	for {
+		select {
+		case d := <-cleanupResult:
+			if code == 0 {
+				code = d.statusCode()
+			}
+			return code
+		case sig := <-app.sigChan:
+			if signaled {
+				return signalCode(sig)
+			}
+			signaled = true
+			cancelCleanup()
+		}
+	}
+}
+
 func signalCode(sig os.Signal) int {
 	s, ok := sig.(syscall.Signal)
 	if ok {
-		// It should exit with 128 + <signal code>.
+		// By convention, a process terminated by a signal exits with 128 + <signal number>.
 		// https://tldp.org/LDP/abs/html/exitcodes.html
 		return int(s) + 128
 	}
 	return 1
-}
-
-func (app *App) init(ctx context.Context) <-chan Decision {
-	return app.runTask(ctx, TaskTypeInit)
 }
 
 func (app *App) skipMain() {
@@ -181,15 +196,7 @@ func (app *App) skipMain() {
 	}
 }
 
-func (app *App) main(ctx context.Context) <-chan Decision {
-	return app.runTask(ctx, TaskTypeMain)
-}
-
-func (app *App) cleanup(ctx context.Context) <-chan Decision {
-	return app.runTask(ctx, TaskTypeCleanup)
-}
-
-func (app *App) runTask(ctx context.Context, tt TaskType) <-chan Decision {
+func (app *App) runTasks(ctx context.Context, tt TaskType) <-chan Decision {
 	tasks := app.tasks[tt]
 	ctx, cancel := context.WithCancel(ctx)
 
@@ -207,15 +214,15 @@ func (app *App) runTask(ctx context.Context, tt TaskType) <-chan Decision {
 		defer cancel()
 
 		decision := Continue
-		for i := 0; i < len(tasks); i++ {
+		for range tasks {
 			tc := <-doneTCs
-			err := tc.Err()
-			if err != nil {
-				d := app.config.errorStrategy(tc)
-				if d != Continue && decision == Continue {
-					cancel()
-					decision = d
-				}
+			if tc.Err() == nil {
+				continue
+			}
+			d := app.config.errorStrategy(tc)
+			if d != Continue && decision == Continue {
+				cancel()
+				decision = d
 			}
 		}
 
