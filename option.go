@@ -1,6 +1,7 @@
 package appmain
 
 import (
+	"fmt"
 	"os"
 	"syscall"
 	"time"
@@ -54,6 +55,19 @@ const (
 	// Exit cancels the running tasks and exits with an error status.
 	Exit
 )
+
+func (d Decision) String() string {
+	switch d {
+	case Continue:
+		return "Continue"
+	case Shutdown:
+		return "Shutdown"
+	case Exit:
+		return "Exit"
+	default:
+		return fmt.Sprintf("Decision(%d)", int(d))
+	}
+}
 
 func (d Decision) statusCode() int {
 	switch d {

@@ -232,3 +232,10 @@ func TestErrorStrategy_UnknownDecision(t *testing.T) {
 	equal(t, runWithTimeout(t, app), 1)
 	equal(t, cleanupCount, int32(1))
 }
+
+func TestDecision_String(t *testing.T) {
+	equal(t, Continue.String(), "Continue")
+	equal(t, Shutdown.String(), "Shutdown")
+	equal(t, Exit.String(), "Exit")
+	equal(t, Decision(100).String(), "Decision(100)")
+}
