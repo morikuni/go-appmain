@@ -215,3 +215,20 @@ func TestCleanupTimeout(t *testing.T) {
 		equal(t, runWithTimeout(t, app), 0)
 	})
 }
+
+func TestErrorStrategy_UnknownDecision(t *testing.T) {
+	app := New(ErrorStrategy(func(tc TaskContext) Decision {
+		return Decision(100)
+	}))
+	app.AddMainTask("", func(ctx context.Context) error {
+		return errors.New("error")
+	})
+	var cleanupCount int32
+	app.AddCleanupTask("", func(ctx context.Context) error {
+		atomic.AddInt32(&cleanupCount, 1)
+		return nil
+	})
+
+	equal(t, runWithTimeout(t, app), 1)
+	equal(t, cleanupCount, int32(1))
+}

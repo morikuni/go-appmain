@@ -43,7 +43,7 @@ func newConfig(opts []Option) *config {
 }
 
 // Decision is the result of ErrorStrategy that decides whether to
-// cancel the running tasks.
+// cancel the running tasks. An unknown value is treated as Exit.
 type Decision int
 
 const (
@@ -61,10 +61,8 @@ func (d Decision) statusCode() int {
 		return 0
 	case Shutdown:
 		return 0
-	case Exit:
-		return 1
 	default:
-		panic("unknown decision")
+		return 1
 	}
 }
 
