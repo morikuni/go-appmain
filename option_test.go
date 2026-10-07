@@ -181,3 +181,37 @@ func TestNotifySignal_Disabled(t *testing.T) {
 	equal(t, code, 0)
 	equal(t, count, int32(1))
 }
+
+func TestCleanupTimeout(t *testing.T) {
+	t.Run("timeout", func(t *testing.T) {
+		release := make(chan struct{})
+		defer close(release)
+
+		app := New(CleanupTimeout(10 * time.Millisecond))
+		app.AddCleanupTask("", func(ctx context.Context) error {
+			<-release
+			return nil
+		})
+
+		equal(t, runWithTimeout(t, app), 1)
+	})
+
+	t.Run("canceled by timeout", func(t *testing.T) {
+		app := New(CleanupTimeout(10 * time.Millisecond))
+		app.AddCleanupTask("", func(ctx context.Context) error {
+			<-ctx.Done()
+			return ctx.Err()
+		})
+
+		equal(t, runWithTimeout(t, app), 1)
+	})
+
+	t.Run("complete", func(t *testing.T) {
+		app := New(CleanupTimeout(time.Minute))
+		app.AddCleanupTask("", func(ctx context.Context) error {
+			return nil
+		})
+
+		equal(t, runWithTimeout(t, app), 0)
+	})
+}

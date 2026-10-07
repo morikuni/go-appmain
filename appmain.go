@@ -23,6 +23,7 @@ type App struct {
 //   - ErrorStrategy
 //   - DefaultTaskOptions
 //   - NotifySignal
+//   - CleanupTimeout
 func New(opts ...Option) *App {
 	c := newConfig(opts)
 
@@ -171,7 +172,22 @@ func (app *App) runInitAndMain(ctx context.Context) (code int, interrupted <-cha
 // return immediately. A signal received during init or main tasks counts as
 // the first one. ctx being done also counts as a signal, but only as the first one.
 func (app *App) runCleanup(ctx context.Context, code int, interrupted <-chan Decision) int {
-	cleanupCtx, cancelCleanup := context.WithCancel(valueOnlyContext{ctx})
+	base := context.Context(valueOnlyContext{ctx})
+	var timeout <-chan struct{}
+	if d := app.config.cleanupTimeout; d > 0 {
+		var cancelTimeout context.CancelFunc
+		base, cancelTimeout = context.WithTimeout(base, d)
+		defer cancelTimeout()
+		timeout = base.Done()
+	}
+	timedOutCode := func() int {
+		if code == 0 {
+			return 1
+		}
+		return code
+	}
+
+	cleanupCtx, cancelCleanup := context.WithCancel(base)
 	defer cancelCleanup()
 	cleanupResult := app.runTasks(cleanupCtx, TaskTypeCleanup)
 
@@ -184,12 +200,18 @@ func (app *App) runCleanup(ctx context.Context, code int, interrupted <-chan Dec
 			code = d.statusCode()
 		case sig := <-app.sigChan:
 			return signalCode(sig)
+		case <-timeout:
+			return timedOutCode()
 		}
 	}
 
 	for {
 		select {
 		case d := <-cleanupResult:
+			// The cleanup tasks may have stopped because of the timeout.
+			if base.Err() != nil {
+				return timedOutCode()
+			}
 			if code == 0 {
 				code = d.statusCode()
 			}
@@ -207,6 +229,8 @@ func (app *App) runCleanup(ctx context.Context, code int, interrupted <-chan Dec
 				signaled = true
 				cancelCleanup()
 			}
+		case <-timeout:
+			return timedOutCode()
 		}
 	}
 }

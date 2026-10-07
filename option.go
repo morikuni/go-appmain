@@ -3,6 +3,7 @@ package appmain
 import (
 	"os"
 	"syscall"
+	"time"
 )
 
 // Option is an option for the New function.
@@ -10,6 +11,7 @@ import (
 //   - ErrorStrategy
 //   - DefaultTaskOptions
 //   - NotifySignal
+//   - CleanupTimeout
 type Option interface {
 	apply(c *config)
 }
@@ -24,6 +26,7 @@ type config struct {
 	signals            []os.Signal
 	errorStrategy      ErrorStrategy
 	defaultTaskOptions []TaskOption
+	cleanupTimeout     time.Duration
 }
 
 func newConfig(opts []Option) *config {
@@ -107,5 +110,16 @@ func DefaultTaskOptions(opts ...TaskOption) Option {
 func NotifySignal(sigs ...os.Signal) Option {
 	return optionFunc(func(c *config) {
 		c.signals = append([]os.Signal(nil), sigs...)
+	})
+}
+
+// CleanupTimeout is an option for the New function that limits the time to
+// run cleanup tasks, including the time to wait for the tasks canceled by a
+// signal to stop. When the timeout elapses, the context.Context of cleanup
+// tasks is canceled and the App exits with status 1 without waiting for them.
+// Zero or a negative value means no timeout, which is the default.
+func CleanupTimeout(d time.Duration) Option {
+	return optionFunc(func(c *config) {
+		c.cleanupTimeout = d
 	})
 }

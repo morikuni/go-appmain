@@ -100,6 +100,10 @@ init tasks ──(all succeeded)──▶ main tasks ──(all done)──▶ c
 - **1st signal** during cleanup tasks: the `context.Context` of the cleanup tasks is canceled.
 - **2nd signal**: `Run` returns immediately without waiting for the remaining tasks, with exit code `128 + signal number`.
 
+To limit the time for cleanup tasks, use `appmain.CleanupTimeout(d)`. When it elapses, the `context.Context` of cleanup tasks
+is canceled and `Run` returns immediately with exit code `1`. It is useful when the process is killed after a grace period,
+such as `terminationGracePeriodSeconds` of Kubernetes.
+
 Signals are handled only while `Run` is running.
 
 `app.RunContext(ctx)` is like `Run`, but canceling `ctx` also starts the shutdown, as if the first signal is received.
@@ -146,6 +150,7 @@ app := appmain.New(appmain.ErrorStrategy(func(tc appmain.TaskContext) appmain.De
 | `ErrorStrategy(func)`          | `New`      | Decide the behavior when a task fails. |
 | `DefaultTaskOptions(opts...)`  | `New`      | Apply task options to every task. |
 | `NotifySignal(sigs...)`        | `New`      | Change the signals to handle. |
+| `CleanupTimeout(d)`            | `New`      | Limit the time for cleanup tasks. |
 | `RunAfter(tasks...)`           | `Add*Task` | Start the task after the given tasks complete (whether they succeed or not). |
 | `Interceptor(func)`            | `Add*Task` | Wrap the task execution. Multiple interceptors run in the given order. |
 
