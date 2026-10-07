@@ -53,7 +53,7 @@ func main() {
 	)
 
 	var db *sql.DB
-	app.AddInitTask("open db", func(ctx context.Context) error {
+	openDB := app.AddInitTask("open db", func(ctx context.Context) error {
 		var err error
 		db, err = sql.Open("driver", "dsn")
 		return err
@@ -71,8 +71,12 @@ func main() {
 		return server.Shutdown(ctx)
 	})
 	app.AddCleanupTask("close db", func(ctx context.Context) error {
+		// Cleanup tasks run even if "open db" fails.
+		if openDB.Err() != nil {
+			return nil
+		}
 		return db.Close()
-	}, appmain.RunAfter(serverTask)) // Close the db after the server stops.
+	}, appmain.RunAfter(openDB, serverTask)) // Close the db after it is opened and the server stops.
 
 	os.Exit(app.Run())
 }
