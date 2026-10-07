@@ -22,6 +22,19 @@ const (
 	TaskTypeCleanup
 )
 
+func (t TaskType) String() string {
+	switch t {
+	case TaskTypeInit:
+		return "init"
+	case TaskTypeMain:
+		return "main"
+	case TaskTypeCleanup:
+		return "cleanup"
+	default:
+		return fmt.Sprintf("TaskType(%d)", int(t))
+	}
+}
+
 // TaskContext provides information about a task.
 type TaskContext interface {
 	// Name returns the name passed to the Add*Task method.

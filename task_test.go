@@ -36,3 +36,10 @@ func TestPanicError(t *testing.T) {
 		t.Fatalf("want %v got %v", errPanic, errorPanic.Err())
 	}
 }
+
+func TestTaskType_String(t *testing.T) {
+	equal(t, TaskTypeInit.String(), "init")
+	equal(t, TaskTypeMain.String(), "main")
+	equal(t, TaskTypeCleanup.String(), "cleanup")
+	equal(t, TaskType(100).String(), "TaskType(100)")
+}
