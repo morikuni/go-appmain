@@ -53,7 +53,7 @@ func main() {
 	)
 
 	var db *sql.DB
-	app.AddInitTask("open db", func(ctx context.Context) error {
+	openDB := app.AddInitTask("open db", func(ctx context.Context) error {
 		var err error
 		db, err = sql.Open("driver", "dsn")
 		return err
@@ -71,8 +71,12 @@ func main() {
 		return server.Shutdown(ctx)
 	})
 	app.AddCleanupTask("close db", func(ctx context.Context) error {
+		// Cleanup tasks run even if "open db" fails.
+		if openDB.Err() != nil {
+			return nil
+		}
 		return db.Close()
-	}, appmain.RunAfter(serverTask)) // Close the db after the server stops.
+	}, appmain.RunAfter(openDB, serverTask)) // Close the db after it is opened and the server stops.
 
 	os.Exit(app.Run())
 }
@@ -100,7 +104,14 @@ init tasks ──(all succeeded)──▶ main tasks ──(all done)──▶ c
 - **1st signal** during cleanup tasks: the `context.Context` of the cleanup tasks is canceled.
 - **2nd signal**: `Run` returns immediately without waiting for the remaining tasks, with exit code `128 + signal number`.
 
+To limit the time for cleanup tasks, use `appmain.CleanupTimeout(d)`. When it elapses, the `context.Context` of cleanup tasks
+is canceled and `Run` returns immediately with exit code `1`. It is useful when the process is killed after a grace period,
+such as `terminationGracePeriodSeconds` of Kubernetes.
+
 Signals are handled only while `Run` is running.
+
+`app.RunContext(ctx)` is like `Run`, but canceling `ctx` also starts the shutdown, as if the first signal is received.
+The tasks can read the values of `ctx`, and cleanup tasks are not canceled by `ctx`.
 The handled signals can be changed with `appmain.NotifySignal(sigs...)`. `appmain.NotifySignal()` with no arguments disables signal handling.
 
 ### Error strategy
@@ -115,19 +126,19 @@ When a task returns an error (or panics), the `ErrorStrategy` decides what to do
 
 `DefaultErrorStrategy` returns `Exit` for init and main tasks, and `Continue` for cleanup tasks.
 
-Note that `context.Canceled` is also treated as an error. With `DefaultErrorStrategy`, a main task that
-returns `ctx.Err()` after a signal makes the exit code `1`. Return `nil` instead, or ignore it in your strategy:
-
-```go
-app := appmain.New(appmain.ErrorStrategy(func(tc appmain.TaskContext) appmain.Decision {
-	if errors.Is(tc.Err(), context.Canceled) {
-		return appmain.Continue
-	}
-	return appmain.DefaultErrorStrategy(tc)
-}))
-```
+When the App cancels a task (for example, by a signal), the task can simply return `ctx.Err()`.
+It is not treated as an error, and `ErrorStrategy` is not called for it.
 
 `ErrorStrategy` may be called concurrently, since cleanup tasks start while the canceled tasks are still stopping.
+
+If a task panics, `TaskContext.Err()` returns `*appmain.PanicError`, which holds the value passed to `panic` and the stack trace:
+
+```go
+var pe *appmain.PanicError
+if errors.As(tc.Err(), &pe) {
+	log.Printf("%s panicked: %v\n%s", tc.Name(), pe.Value, pe.Stack)
+}
+```
 
 ```go
 app := appmain.New(appmain.ErrorStrategy(func(tc appmain.TaskContext) appmain.Decision {
@@ -143,6 +154,7 @@ app := appmain.New(appmain.ErrorStrategy(func(tc appmain.TaskContext) appmain.De
 | `ErrorStrategy(func)`          | `New`      | Decide the behavior when a task fails. |
 | `DefaultTaskOptions(opts...)`  | `New`      | Apply task options to every task. |
 | `NotifySignal(sigs...)`        | `New`      | Change the signals to handle. |
+| `CleanupTimeout(d)`            | `New`      | Limit the time for cleanup tasks. |
 | `RunAfter(tasks...)`           | `Add*Task` | Start the task after the given tasks complete (whether they succeed or not). |
 | `Interceptor(func)`            | `Add*Task` | Wrap the task execution. Multiple interceptors run in the given order. |
 

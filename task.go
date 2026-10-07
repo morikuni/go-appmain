@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"runtime/debug"
 )
 
 // Task represents a task in the App.
@@ -21,6 +22,19 @@ const (
 	TaskTypeCleanup
 )
 
+func (t TaskType) String() string {
+	switch t {
+	case TaskTypeInit:
+		return "init"
+	case TaskTypeMain:
+		return "main"
+	case TaskTypeCleanup:
+		return "cleanup"
+	default:
+		return fmt.Sprintf("TaskType(%d)", int(t))
+	}
+}
+
 // TaskContext provides information about a task.
 type TaskContext interface {
 	// Name returns the name passed to the Add*Task method.
@@ -30,7 +44,7 @@ type TaskContext interface {
 	// Done returns a channel that is closed when the task completes or is skipped.
 	Done() <-chan struct{}
 	// Err returns the error returned by the task. It is valid only after Done is closed.
-	// If the task panics, the error describes the panic.
+	// If the task panics, it returns *PanicError.
 	// If the task is skipped, it returns ErrSkipped.
 	Err() error
 }
@@ -97,8 +111,8 @@ func (t *task) skip() {
 
 func (t *task) run(ctx context.Context) {
 	defer func() {
-		if r := recover(); r != nil && t.err == nil {
-			t.err = fmt.Errorf("panic: %v", r)
+		if r := recover(); r != nil {
+			t.err = &PanicError{Value: r, Stack: debug.Stack()}
 		}
 		close(t.done)
 	}()
@@ -117,3 +131,22 @@ func (t *task) run(ctx context.Context) {
 // ErrSkipped is returned by TaskContext.Err when the main task did not run
 // because init tasks failed or a signal was received during init tasks.
 var ErrSkipped = errors.New("skipped")
+
+// PanicError is returned by TaskContext.Err when the task panics.
+type PanicError struct {
+	// Value is the value passed to panic.
+	Value interface{}
+	// Stack is the stack trace of the goroutine that panicked.
+	Stack []byte
+}
+
+func (e *PanicError) Error() string {
+	return fmt.Sprintf("panic: %v", e.Value)
+}
+
+// Unwrap returns Value if it is an error, so that errors.Is and errors.As
+// can inspect the error passed to panic.
+func (e *PanicError) Unwrap() error {
+	err, _ := e.Value.(error)
+	return err
+}
