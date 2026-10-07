@@ -51,7 +51,7 @@ func TestErrorStrategy_Shutdown(t *testing.T) {
 		atomic.AddInt32(&count, 1)
 		return errors.New("aaa")
 	})
-	main2 := app.AddMainTask("", func(ctx context.Context) error {
+	app.AddMainTask("", func(ctx context.Context) error {
 		<-ctx.Done()
 		return ctx.Err()
 	})
@@ -63,7 +63,7 @@ func TestErrorStrategy_Shutdown(t *testing.T) {
 	code := runWithTimeout(t, app)
 
 	equal(t, code, 0)
-	equal(t, errTCs, []TaskContext{main1, main2})
+	equal(t, errTCs, []TaskContext{main1})
 	equal(t, count, int32(2))
 }
 
@@ -80,7 +80,7 @@ func TestErrorStrategy_Exit(t *testing.T) {
 		atomic.AddInt32(&count, 1)
 		return errors.New("aaa")
 	})
-	main2 := app.AddMainTask("", func(ctx context.Context) error {
+	app.AddMainTask("", func(ctx context.Context) error {
 		<-ctx.Done()
 		return ctx.Err()
 	})
@@ -92,7 +92,7 @@ func TestErrorStrategy_Exit(t *testing.T) {
 	code := runWithTimeout(t, app)
 
 	equal(t, code, 1)
-	equal(t, errTCs, []TaskContext{main1, main2})
+	equal(t, errTCs, []TaskContext{main1})
 	equal(t, count, int32(2))
 }
 

@@ -2,6 +2,7 @@ package appmain
 
 import (
 	"context"
+	"errors"
 	"os"
 	"os/signal"
 	"syscall"
@@ -221,7 +222,7 @@ func (app *App) runTasks(ctx context.Context, tt TaskType) <-chan Decision {
 		decision := Continue
 		for range tasks {
 			tc := <-doneTCs
-			if tc.Err() == nil {
+			if err := tc.Err(); err == nil || isCanceledByApp(ctx, err) {
 				continue
 			}
 			d := app.config.errorStrategy(tc)
@@ -235,4 +236,11 @@ func (app *App) runTasks(ctx context.Context, tt TaskType) <-chan Decision {
 	}()
 
 	return result
+}
+
+// isCanceledByApp reports whether err is the result of the App canceling ctx,
+// as opposed to an error that the task returned on its own.
+func isCanceledByApp(ctx context.Context, err error) bool {
+	ctxErr := ctx.Err()
+	return ctxErr != nil && errors.Is(err, ctxErr)
 }

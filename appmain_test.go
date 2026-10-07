@@ -3,6 +3,7 @@ package appmain
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"reflect"
 	"sync/atomic"
@@ -144,12 +145,7 @@ func runApp(t *testing.T, signalAt TaskType, signals int) (int, ResultSet) {
 	release := make(chan struct{})
 	defer close(release)
 
-	app := New(ErrorStrategy(func(tc TaskContext) Decision {
-		if errors.Is(tc.Err(), context.Canceled) {
-			return Continue
-		}
-		return DefaultErrorStrategy(tc)
-	}))
+	app := New()
 
 	type phase struct {
 		num, success int32
@@ -272,4 +268,31 @@ func TestApp_SendSignalAfterRun(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("SendSignal blocked after Run returned")
 	}
+}
+
+func TestApp_CanceledError(t *testing.T) {
+	t.Run("canceled by app", func(t *testing.T) {
+		app := New()
+		started := make(chan struct{})
+		app.AddMainTask("", func(ctx context.Context) error {
+			close(started)
+			<-ctx.Done()
+			return fmt.Errorf("wrapped: %w", ctx.Err())
+		})
+		go func() {
+			<-started
+			app.SendSignal(os.Interrupt)
+		}()
+
+		equal(t, runWithTimeout(t, app), 0)
+	})
+
+	t.Run("returned by task", func(t *testing.T) {
+		app := New()
+		app.AddMainTask("", func(ctx context.Context) error {
+			return context.Canceled
+		})
+
+		equal(t, runWithTimeout(t, app), 1)
+	})
 }

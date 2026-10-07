@@ -69,6 +69,9 @@ func (d Decision) statusCode() int {
 // behaves when a task returns an error. It is called only when a task
 // returns an error, which is available from TaskContext.Err().
 //
+// It is not called when a task returns the error of its context.Context after
+// the App cancels it, for example by a signal, since the task stopped as requested.
+//
 // It may be called concurrently, because cleanup tasks start while the tasks
 // canceled by a signal are still stopping.
 type ErrorStrategy func(TaskContext) Decision
