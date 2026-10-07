@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 )
 
 // App represents an application.
@@ -105,6 +106,16 @@ func (app *App) SendSignal(sig os.Signal) {
 // The App handles signals only while Run is running.
 // Run must be called only once.
 func (app *App) Run() int {
+	return app.RunContext(context.Background())
+}
+
+// RunContext is like Run, but it also starts the shutdown when ctx is done,
+// as if the first signal is received.
+//
+// The context.Context of each task inherits the values of ctx. The
+// context.Context of cleanup tasks is not canceled by ctx, so that cleanup
+// tasks can run after ctx is done.
+func (app *App) RunContext(ctx context.Context) int {
 	defer close(app.done)
 
 	// signal.Notify with no signals relays every signal, including SIGURG used by
@@ -114,14 +125,14 @@ func (app *App) Run() int {
 		defer signal.Stop(app.sigChan)
 	}
 
-	ctx := context.Background()
 	code, interrupted := app.runInitAndMain(ctx)
 	return app.runCleanup(ctx, code, interrupted)
 }
 
 // runInitAndMain runs init tasks and then main tasks.
-// If a signal is received, it cancels the running tasks and returns their
-// result channel without waiting, so that cleanup tasks can start immediately.
+// If a signal is received or ctx is done, it cancels the running tasks and
+// returns their result channel without waiting, so that cleanup tasks can
+// start immediately.
 func (app *App) runInitAndMain(ctx context.Context) (code int, interrupted <-chan Decision) {
 	initCtx, cancelInit := context.WithCancel(ctx)
 	defer cancelInit()
@@ -136,6 +147,9 @@ func (app *App) runInitAndMain(ctx context.Context) (code int, interrupted <-cha
 	case <-app.sigChan:
 		app.skipMain()
 		return 0, initResult
+	case <-ctx.Done():
+		app.skipMain()
+		return 0, initResult
 	}
 
 	mainCtx, cancelMain := context.WithCancel(ctx)
@@ -147,20 +161,24 @@ func (app *App) runInitAndMain(ctx context.Context) (code int, interrupted <-cha
 		return d.statusCode(), nil
 	case <-app.sigChan:
 		return 0, mainResult
+	case <-ctx.Done():
+		return 0, mainResult
 	}
 }
 
 // runCleanup runs cleanup tasks.
 // The first signal cancels the cleanup tasks and the second signal makes it
 // return immediately. A signal received during init or main tasks counts as
-// the first one.
+// the first one. ctx being done also counts as a signal, but only as the first one.
 func (app *App) runCleanup(ctx context.Context, code int, interrupted <-chan Decision) int {
-	cleanupCtx, cancelCleanup := context.WithCancel(ctx)
+	cleanupCtx, cancelCleanup := context.WithCancel(valueOnlyContext{ctx})
 	defer cancelCleanup()
 	cleanupResult := app.runTasks(cleanupCtx, TaskTypeCleanup)
 
 	signaled := interrupted != nil
+	ctxDone := ctx.Done()
 	if signaled {
+		ctxDone = nil
 		select {
 		case d := <-interrupted:
 			code = d.statusCode()
@@ -182,9 +200,28 @@ func (app *App) runCleanup(ctx context.Context, code int, interrupted <-chan Dec
 			}
 			signaled = true
 			cancelCleanup()
+		case <-ctxDone:
+			// ctx.Done is never reset, so stop receiving from it.
+			ctxDone = nil
+			if !signaled {
+				signaled = true
+				cancelCleanup()
+			}
 		}
 	}
 }
+
+// valueOnlyContext keeps the values of the parent but is never canceled.
+// It is the same as context.WithoutCancel, which requires Go 1.21.
+type valueOnlyContext struct {
+	context.Context
+}
+
+func (valueOnlyContext) Deadline() (time.Time, bool) { return time.Time{}, false }
+
+func (valueOnlyContext) Done() <-chan struct{} { return nil }
+
+func (valueOnlyContext) Err() error { return nil }
 
 func signalCode(sig os.Signal) int {
 	s, ok := sig.(syscall.Signal)

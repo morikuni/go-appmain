@@ -296,3 +296,42 @@ func TestApp_CanceledError(t *testing.T) {
 		equal(t, runWithTimeout(t, app), 1)
 	})
 }
+
+func TestApp_RunContext(t *testing.T) {
+	type key struct{}
+	ctx, cancel := context.WithCancel(context.WithValue(context.Background(), key{}, "value"))
+	defer cancel()
+
+	app := New()
+	started := make(chan struct{})
+	var mainValue interface{}
+	app.AddMainTask("", func(ctx context.Context) error {
+		mainValue = ctx.Value(key{})
+		close(started)
+		<-ctx.Done()
+		return ctx.Err()
+	})
+	var cleanupValue, cleanupErr interface{}
+	app.AddCleanupTask("", func(ctx context.Context) error {
+		cleanupValue = ctx.Value(key{})
+		cleanupErr = ctx.Err()
+		return nil
+	})
+	go func() {
+		<-started
+		cancel()
+	}()
+
+	result := make(chan int, 1)
+	go func() { result <- app.RunContext(ctx) }()
+	select {
+	case code := <-result:
+		equal(t, code, 0)
+	case <-time.After(5 * time.Second):
+		t.Fatal("RunContext did not return")
+	}
+
+	equal(t, mainValue, "value")
+	equal(t, cleanupValue, "value")
+	equal(t, cleanupErr, nil)
+}

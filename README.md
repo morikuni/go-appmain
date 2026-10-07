@@ -101,6 +101,9 @@ init tasks ──(all succeeded)──▶ main tasks ──(all done)──▶ c
 - **2nd signal**: `Run` returns immediately without waiting for the remaining tasks, with exit code `128 + signal number`.
 
 Signals are handled only while `Run` is running.
+
+`app.RunContext(ctx)` is like `Run`, but canceling `ctx` also starts the shutdown, as if the first signal is received.
+The tasks can read the values of `ctx`, and cleanup tasks are not canceled by `ctx`.
 The handled signals can be changed with `appmain.NotifySignal(sigs...)`. `appmain.NotifySignal()` with no arguments disables signal handling.
 
 ### Error strategy
