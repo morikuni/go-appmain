@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"os/signal"
+	"sync/atomic"
 	"syscall"
 	"time"
 )
@@ -16,6 +17,7 @@ type App struct {
 	sigChan chan os.Signal
 	sigSet  map[os.Signal]struct{}
 	done    chan struct{}
+	ran     int32
 }
 
 // New creates a new App with the given options.
@@ -105,7 +107,8 @@ func (app *App) SendSignal(sig os.Signal) {
 //	os.Exit(app.Run())
 //
 // The App handles signals only while Run is running.
-// Run must be called only once.
+// Run must be called only once, and RunContext counts as Run. It panics if
+// called more than once.
 func (app *App) Run() int {
 	return app.RunContext(context.Background())
 }
@@ -117,6 +120,9 @@ func (app *App) Run() int {
 // context.Context of cleanup tasks is not canceled by ctx, so that cleanup
 // tasks can run after ctx is done.
 func (app *App) RunContext(ctx context.Context) int {
+	if !atomic.CompareAndSwapInt32(&app.ran, 0, 1) {
+		panic("appmain: Run must be called only once")
+	}
 	defer close(app.done)
 
 	// signal.Notify with no signals relays every signal, including SIGURG used by

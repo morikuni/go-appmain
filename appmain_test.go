@@ -335,3 +335,13 @@ func TestApp_RunContext(t *testing.T) {
 	equal(t, cleanupValue, "value")
 	equal(t, cleanupErr, nil)
 }
+
+func TestApp_RunTwice(t *testing.T) {
+	app := New()
+	app.Run()
+
+	defer func() {
+		equal(t, recover(), "appmain: Run must be called only once")
+	}()
+	app.Run()
+}
