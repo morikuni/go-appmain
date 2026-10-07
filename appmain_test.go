@@ -21,15 +21,14 @@ func equal(tb testing.TB, a, b interface{}) {
 
 func TestApp(t *testing.T) {
 	for name, tt := range map[string]struct {
-		runner       func(app *App) int
-		wantCode     int
-		wantResult   ResultSet
-		wantDuration time.Duration
+		signalAt   TaskType // zero means no signal
+		signals    int
+		wantCode   int
+		wantResult ResultSet
 	}{
 		"success": {
-			func(app *App) int {
-				return app.Run()
-			},
+			0,
+			0,
 			0,
 			ResultSet{
 				NumInit:        2,
@@ -39,15 +38,10 @@ func TestApp(t *testing.T) {
 				NumCleanup:     2,
 				SuccessCleanup: 2,
 			},
-			300 * time.Millisecond,
 		},
 		"cancel init": {
-			func(app *App) int {
-				time.AfterFunc(10*time.Millisecond, func() {
-					app.SendSignal(os.Interrupt)
-				})
-				return app.Run()
-			},
+			TaskTypeInit,
+			1,
 			0,
 			ResultSet{
 				NumInit:        2,
@@ -57,15 +51,10 @@ func TestApp(t *testing.T) {
 				NumCleanup:     2,
 				SuccessCleanup: 2,
 			},
-			110 * time.Millisecond,
 		},
 		"cancel main": {
-			func(app *App) int {
-				time.AfterFunc(110*time.Millisecond, func() {
-					app.SendSignal(os.Interrupt)
-				})
-				return app.Run()
-			},
+			TaskTypeMain,
+			1,
 			0,
 			ResultSet{
 				NumInit:        2,
@@ -75,15 +64,10 @@ func TestApp(t *testing.T) {
 				NumCleanup:     2,
 				SuccessCleanup: 2,
 			},
-			210 * time.Millisecond,
 		},
 		"cancel cleanup": {
-			func(app *App) int {
-				time.AfterFunc(210*time.Millisecond, func() {
-					app.SendSignal(os.Interrupt)
-				})
-				return app.Run()
-			},
+			TaskTypeCleanup,
+			1,
 			0,
 			ResultSet{
 				NumInit:        2,
@@ -93,18 +77,10 @@ func TestApp(t *testing.T) {
 				NumCleanup:     2,
 				SuccessCleanup: 1,
 			},
-			210 * time.Millisecond,
 		},
 		"cancel twice init": {
-			func(app *App) int {
-				time.AfterFunc(10*time.Millisecond, func() {
-					app.SendSignal(os.Interrupt)
-					time.AfterFunc(10*time.Millisecond, func() {
-						app.SendSignal(os.Interrupt)
-					})
-				})
-				return app.Run()
-			},
+			TaskTypeInit,
+			2,
 			128 + int(syscall.SIGINT),
 			ResultSet{
 				NumInit:        2,
@@ -114,18 +90,10 @@ func TestApp(t *testing.T) {
 				NumCleanup:     2,
 				SuccessCleanup: 1,
 			},
-			20 * time.Millisecond,
 		},
 		"cancel twice main": {
-			func(app *App) int {
-				time.AfterFunc(110*time.Millisecond, func() {
-					app.SendSignal(os.Interrupt)
-					time.AfterFunc(10*time.Millisecond, func() {
-						app.SendSignal(os.Interrupt)
-					})
-				})
-				return app.Run()
-			},
+			TaskTypeMain,
+			2,
 			128 + int(syscall.SIGINT),
 			ResultSet{
 				NumInit:        2,
@@ -135,16 +103,10 @@ func TestApp(t *testing.T) {
 				NumCleanup:     2,
 				SuccessCleanup: 1,
 			},
-			120 * time.Millisecond,
 		},
 		"cancel twice cleanup": {
-			func(app *App) int {
-				time.AfterFunc(210*time.Millisecond, func() {
-					app.SendSignal(os.Interrupt)
-					app.SendSignal(os.Interrupt)
-				})
-				return app.Run()
-			},
+			TaskTypeCleanup,
+			2,
 			128 + int(syscall.SIGINT),
 			ResultSet{
 				NumInit:        2,
@@ -154,16 +116,13 @@ func TestApp(t *testing.T) {
 				NumCleanup:     2,
 				SuccessCleanup: 1,
 			},
-			210 * time.Millisecond,
 		},
 	} {
+		tt := tt
 		t.Run(name, func(t *testing.T) {
-			code, rs, d := runApp(tt.runner)
+			code, rs := runApp(t, tt.signalAt, tt.signals)
 			equal(t, code, tt.wantCode)
 			equal(t, rs, tt.wantResult)
-			if d < tt.wantDuration || d > (tt.wantDuration+10*time.Millisecond) {
-				t.Fatalf("want %v got %v", tt.wantDuration, d)
-			}
 		})
 	}
 }
@@ -177,21 +136,13 @@ type ResultSet struct {
 	SuccessCleanup int32
 }
 
-func runApp(runner func(*App) int) (int, ResultSet, time.Duration) {
-	createTask := func(count, success *int32, wait bool) func(ctx context.Context) error {
-		return func(ctx context.Context) error {
-			atomic.AddInt32(count, 1)
-			if wait {
-				select {
-				case <-time.After(100 * time.Millisecond):
-				case <-ctx.Done():
-					return ctx.Err()
-				}
-			}
-			atomic.AddInt32(success, 1)
-			return nil
-		}
-	}
+// runApp runs an App that has a quick task and a slow task in each phase.
+// The slow task in the phase signalAt blocks until it is canceled, or until the
+// test ends if signals is 2. When signals is 2, the slow cleanup task also
+// blocks until the test ends.
+func runApp(t *testing.T, signalAt TaskType, signals int) (int, ResultSet) {
+	release := make(chan struct{})
+	defer close(release)
 
 	app := New(ErrorStrategy(func(tc TaskContext) Decision {
 		if errors.Is(tc.Err(), context.Canceled) {
@@ -199,38 +150,85 @@ func runApp(runner func(*App) int) (int, ResultSet, time.Duration) {
 		}
 		return DefaultErrorStrategy(tc)
 	}))
-	var (
-		nInit int32
-		sInit int32
-	)
-	app.AddInitTask("init 1", createTask(&nInit, &sInit, false))
-	app.AddInitTask("init 2", createTask(&nInit, &sInit, true))
 
-	var (
-		nMain int32
-		sMain int32
-	)
-	app.AddMainTask("main 1", createTask(&nMain, &sMain, false))
-	app.AddMainTask("main 2", createTask(&nMain, &sMain, true))
+	type phase struct {
+		num, success int32
+		quickDone    chan struct{}
+		slowStarted  chan struct{}
+	}
+	phases := map[TaskType]*phase{}
+	for _, tt := range []TaskType{TaskTypeInit, TaskTypeMain, TaskTypeCleanup} {
+		p := &phase{quickDone: make(chan struct{}), slowStarted: make(chan struct{})}
+		phases[tt] = p
 
-	var (
-		nCleanup int32
-		sCleanup int32
-	)
-	app.AddCleanupTask("cleanup 1", createTask(&nCleanup, &sCleanup, false))
-	app.AddCleanupTask("cleanup 2", createTask(&nCleanup, &sCleanup, true))
+		blocks := tt == signalAt || (signals == 2 && tt == TaskTypeCleanup)
+		ignoreCtx := signals == 2
 
-	start := time.Now()
-	code := runner(app)
-	d := time.Since(start)
+		quick := func(ctx context.Context) error {
+			atomic.AddInt32(&p.num, 1)
+			atomic.AddInt32(&p.success, 1)
+			close(p.quickDone)
+			return nil
+		}
+		slow := func(ctx context.Context) error {
+			atomic.AddInt32(&p.num, 1)
+			close(p.slowStarted)
+			if blocks {
+				if ignoreCtx {
+					<-release
+					return errors.New("released")
+				}
+				<-ctx.Done()
+				return ctx.Err()
+			}
+			atomic.AddInt32(&p.success, 1)
+			return nil
+		}
+		app.addTask("quick", tt, quick, nil)
+		app.addTask("slow", tt, slow, nil)
+	}
+
+	waitRunning := func(tt TaskType) {
+		<-phases[tt].quickDone
+		<-phases[tt].slowStarted
+	}
+	if signalAt != 0 {
+		go func() {
+			waitRunning(signalAt)
+			app.SendSignal(os.Interrupt)
+			if signals == 2 {
+				waitRunning(TaskTypeCleanup)
+				app.SendSignal(os.Interrupt)
+			}
+		}()
+	}
+
+	code := runWithTimeout(t, app)
 	return code, ResultSet{
-		NumInit:        atomic.LoadInt32(&nInit),
-		SuccessInit:    atomic.LoadInt32(&sInit),
-		NumMain:        atomic.LoadInt32(&nMain),
-		SuccessMain:    atomic.LoadInt32(&sMain),
-		NumCleanup:     atomic.LoadInt32(&nCleanup),
-		SuccessCleanup: atomic.LoadInt32(&sCleanup),
-	}, d
+		NumInit:        atomic.LoadInt32(&phases[TaskTypeInit].num),
+		SuccessInit:    atomic.LoadInt32(&phases[TaskTypeInit].success),
+		NumMain:        atomic.LoadInt32(&phases[TaskTypeMain].num),
+		SuccessMain:    atomic.LoadInt32(&phases[TaskTypeMain].success),
+		NumCleanup:     atomic.LoadInt32(&phases[TaskTypeCleanup].num),
+		SuccessCleanup: atomic.LoadInt32(&phases[TaskTypeCleanup].success),
+	}
+}
+
+// runWithTimeout runs the App and fails the test if Run does not return.
+// The timeout only guards against a deadlock, so it is long enough not to be flaky.
+func runWithTimeout(t *testing.T, app *App) int {
+	t.Helper()
+
+	result := make(chan int, 1)
+	go func() { result <- app.Run() }()
+
+	select {
+	case code := <-result:
+		return code
+	case <-time.After(5 * time.Second):
+		t.Fatal("Run did not return")
+		return 0
+	}
 }
 
 func TestApp_InitError(t *testing.T) {

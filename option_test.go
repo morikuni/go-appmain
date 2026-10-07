@@ -10,10 +10,10 @@ import (
 )
 
 func TestErrorStrategy_Continue(t *testing.T) {
-	var errTCs []TaskContext
+	errTCs := map[TaskContext]bool{}
 
 	app := New(ErrorStrategy(func(tc TaskContext) Decision {
-		errTCs = append(errTCs, tc)
+		errTCs[tc] = true
 		return Continue
 	}))
 
@@ -23,11 +23,6 @@ func TestErrorStrategy_Continue(t *testing.T) {
 		return errors.New("aaa")
 	})
 	main2 := app.AddMainTask("", func(ctx context.Context) error {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-time.After(100 * time.Millisecond):
-		}
 		atomic.AddInt32(&count, 1)
 		return errors.New("aaa")
 	})
@@ -36,10 +31,10 @@ func TestErrorStrategy_Continue(t *testing.T) {
 		return nil
 	})
 
-	code := app.Run()
+	code := runWithTimeout(t, app)
 
 	equal(t, code, 0)
-	equal(t, errTCs, []TaskContext{main1, main2})
+	equal(t, errTCs, map[TaskContext]bool{main1: true, main2: true})
 	equal(t, count, int32(3))
 }
 
@@ -57,20 +52,15 @@ func TestErrorStrategy_Shutdown(t *testing.T) {
 		return errors.New("aaa")
 	})
 	main2 := app.AddMainTask("", func(ctx context.Context) error {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-time.After(1000 * time.Millisecond):
-		}
-		atomic.AddInt32(&count, 1)
-		return errors.New("aaa")
+		<-ctx.Done()
+		return ctx.Err()
 	})
 	app.AddMainTask("", func(ctx context.Context) error {
 		atomic.AddInt32(&count, 1)
 		return nil
 	})
 
-	code := app.Run()
+	code := runWithTimeout(t, app)
 
 	equal(t, code, 0)
 	equal(t, errTCs, []TaskContext{main1, main2})
@@ -91,20 +81,15 @@ func TestErrorStrategy_Exit(t *testing.T) {
 		return errors.New("aaa")
 	})
 	main2 := app.AddMainTask("", func(ctx context.Context) error {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-time.After(1000 * time.Millisecond):
-		}
-		atomic.AddInt32(&count, 1)
-		return errors.New("aaa")
+		<-ctx.Done()
+		return ctx.Err()
 	})
 	app.AddMainTask("", func(ctx context.Context) error {
 		atomic.AddInt32(&count, 1)
 		return nil
 	})
 
-	code := app.Run()
+	code := runWithTimeout(t, app)
 
 	equal(t, code, 1)
 	equal(t, errTCs, []TaskContext{main1, main2})
@@ -136,43 +121,32 @@ func TestNotifySignal(t *testing.T) {
 	t.Run("shutdown", func(t *testing.T) {
 		app := New(NotifySignal(syscall.SIGHUP))
 
-		var count int
 		app.AddMainTask("", func(ctx context.Context) error {
-			select {
-			case <-ctx.Done():
-				return ctx.Err()
-			case <-time.After(100 * time.Millisecond):
-			}
-			count++
+			<-ctx.Done()
 			return nil
 		})
 
 		app.SendSignal(syscall.SIGHUP)
-		code := app.Run()
+		code := runWithTimeout(t, app)
 
 		equal(t, code, 0)
-		equal(t, count, 0)
 	})
 
 	t.Run("ignore", func(t *testing.T) {
 		app := New(NotifySignal(syscall.SIGHUP))
 
-		var count int
+		var count int32
 		app.AddMainTask("", func(ctx context.Context) error {
-			select {
-			case <-ctx.Done():
-				return ctx.Err()
-			case <-time.After(100 * time.Millisecond):
-			}
-			count++
+			atomic.AddInt32(&count, 1)
 			return nil
 		})
 
 		app.SendSignal(syscall.SIGTERM)
-		code := app.Run()
+		equal(t, len(app.sigChan), 0)
+		code := runWithTimeout(t, app)
 
 		equal(t, code, 0)
-		equal(t, count, 1)
+		equal(t, count, int32(1))
 	})
 }
 
